@@ -1,11 +1,20 @@
-import { NextConfig } from 'next'
+import { NextConfig } from 'next';
 
-const config: NextConfig = {
-    experimental: {
-        serverActions: {
-            allowedOrigins: ["*"] // or specify your allowed origins
-        },
-    },
-}
+const nextConfig: NextConfig = {
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        dns: false,
+        net: false,
+        tls: false,
+        fs: false,
+        pg: false,
+        'pg-native': false
+      };
+    }
+    return config;
+  },
+};
 
-export default config
+export default nextConfig;

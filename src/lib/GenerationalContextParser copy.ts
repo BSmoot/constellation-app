@@ -1,231 +1,297 @@
 // src/lib/GenerationalContextParser.ts
-
-
-type ParsedBirthDate = {
-    decade: string;
-    exactYear?: string;
-    generationalCusp?: boolean;
-    culturalEra: string[];
-    technologicalEra: string[];
-    confidence: number;
-}
-
-type ParsedBackground = {
-    location: string;
-    socioEconomic: string;
-    environment: string;
-    culturalContext: string[];
-    communityType: string;
-    confidence: number;
-}
-
-type ParsedInfluences = {
-    events: string[];
-    technologies: string[];
-    socialChanges: string[];
-    personalImpact: string[];
-    timeframe: string;
-    confidence: number;
-}
-
-type ParsedCurrentFocus = {
-    themes: string[];
-    concerns: string[];
-    outlook: string;
-    generationalPerspective: string;
-    confidence: number;
-}
+import type { Pool } from 'pg';
+import { QuestionId } from '@/config/questions';
+import {
+    ParsedBirthDate,
+    ParsedBackground,
+    ParsedInfluences,
+    ParsedCurrentFocus
+} from './interfaces/parser';
+import Anthropic from '@anthropic-ai/sdk';
+import { env } from '@/config/env';
+import { AI_MODELS, DEFAULT_MODEL, MAX_TOKENS } from '@/config/ai-models';
+import { createSystemPrompts } from '@/config/parser-prompts';
 
 export class GenerationalContextParser {
-    private readonly decadeMarkers = {
-        '1960s': ['sixties', '60s', '1960'],
-        '1970s': ['seventies', '70s', '1970'],
-        '1980s': ['eighties', '80s', '1980'],
-        '1990s': ['nineties', '90s', '1990'],
-        '2000s': ['two thousands', '00s', '2000']
+    private anthropic: Anthropic | null;
+    private decadeMarkers: Record<string, string[]>;
+    private socioEconomicMarkers: Record<string, string[]>;
+    private technologyMarkers: Record<string, string[]>;
+    private db: any; // temporarily use any
+    private logger: Console;
+    private systemPrompts: ReturnType<typeof createSystemPrompts>;
+
+    constructor() {
+        this.logger = console;
+        this.anthropic = null;
+        this.db = null;
+
+        // Only initialize db and anthropic on the server side
+        if (typeof window === 'undefined') {
+            // Dynamic import with proper error handling
+            import('./database/db-server').then(db => {
+                this.db = db.default;
+                this.logger.log('Database initialized successfully');
+            }).catch(err => {
+                this.logger.error('Failed to load database:', err);
+            });
+
+            // Initialize Anthropic client
+            if (!process.env.ANTHROPIC_API_KEY) {
+                throw new Error('ANTHROPIC_API_KEY is required');
+            }
+            
+            this.anthropic = new Anthropic({
+                apiKey: process.env.ANTHROPIC_API_KEY,
+            });
+        }
+
+        // Initialize markers
+        this.decadeMarkers = {
+            '1960s': ['sixties', '60s', '1960'],
+            '1970s': ['seventies', '70s', '1970'],
+            '1980s': ['eighties', '80s', '1980'],
+            '1990s': ['nineties', '90s', '1990'],
+            '2000s': ['two thousands', '00s', '2000']
+        };
+
+        this.socioEconomicMarkers = {
+            'working-class': ['working class', 'blue collar', 'factory', 'labor'],
+            'middle-class': ['middle class', 'suburban', 'comfortable'],
+            'upper-middle-class': ['upper middle', 'privileged', 'well-off'],
+            'lower-income': ['poor', 'struggling', 'difficult', 'poverty']
+        };
+
+        this.technologyMarkers = {
+            'pre-digital': ['before computers', 'no internet', 'landline'],
+            'early-digital': ['dial-up', 'first computer', 'early internet'],
+            'mobile-transition': ['flip phone', 'cell phone', 'nokia'],
+            'smartphone-era': ['iphone', 'smartphone', 'apps'],
+            'social-media-era': ['facebook', 'social media', 'instagram']
+        };
+
+        // Initialize system prompts
+        this.systemPrompts = createSystemPrompts({
+            decadeMarkers: this.decadeMarkers,
+            technologyMarkers: this.technologyMarkers,
+            socioEconomicMarkers: this.socioEconomicMarkers
+        });
+
+        // Initialize database markers
+        this.initializeMarkers().catch(error => {
+            this.logger.error('Failed to initialize markers:', error);
+        });
     }
 
-    private readonly socioEconomicMarkers = {
-        'working-class': ['working class', 'blue collar', 'factory', 'labor'],
-        'middle-class': ['middle class', 'suburban', 'comfortable'],
-        'upper-middle-class': ['upper middle', 'privileged', 'well-off'],
-        'lower-income': ['poor', 'struggling', 'difficult', 'poverty']
+    private async initializeMarkers() {
+        try {
+            const dbDecadeMarkers = await this.loadMarkers('decade');
+            const dbSocioEconomicMarkers = await this.loadMarkers('socioEconomic');
+            const dbTechnologyMarkers = await this.loadMarkers('technology');
+
+            if (Object.keys(dbDecadeMarkers).length > 0) {
+                this.decadeMarkers = { ...this.decadeMarkers, ...dbDecadeMarkers };
+            }
+            if (Object.keys(dbSocioEconomicMarkers).length > 0) {
+                this.socioEconomicMarkers = { ...this.socioEconomicMarkers, ...dbSocioEconomicMarkers };
+            }
+            if (Object.keys(dbTechnologyMarkers).length > 0) {
+                this.technologyMarkers = { ...this.technologyMarkers, ...dbTechnologyMarkers };
+            }
+        } catch (error) {
+            this.logger.error('Failed to initialize markers:', error);
+        }
     }
 
-    private readonly technologyMarkers = {
-        'pre-digital': ['before computers', 'no internet', 'landline'],
-        'early-digital': ['dial-up', 'first computer', 'early internet'],
-        'mobile-transition': ['flip phone', 'cell phone', 'nokia'],
-        'smartphone-era': ['iphone', 'smartphone', 'apps'],
-        'social-media-era': ['facebook', 'social media', 'instagram']
+    private async loadMarkers(type: string): Promise<Record<string, string[]>> {
+        if (!this.db) {
+            this.logger.warn('Database not initialized');
+            return {};
+        }
+
+        try {
+            const result = await this.db.query(
+                'SELECT key, markers FROM generation_markers WHERE marker_type = $1',
+                [type]
+            );
+            return result.rows.reduce((acc, row) => ({
+                ...acc,
+                [row.key]: row.markers
+            }), {});
+        } catch (error) {
+            this.logger.error(`Failed to load ${type} markers:`, error);
+            return {};
+        }
     }
 
     async parseResponse(questionId: string, response: string) {
-        switch (questionId) {
-            case 'birthDate':
-                return this.parseBirthDate(response);
-            case 'background':
-                return this.parseBackground(response);
-            case 'influences':
-                return this.parseInfluences(response);
-            case 'currentFocus':
-                return this.parseCurrentFocus(response);
-            default:
+        try {
+            if (!this.anthropic) {
+                throw new Error('Anthropic client not initialized');
+            }
+
+            const config = this.systemPrompts[questionId as keyof typeof this.systemPrompts];
+            if (!config) {
                 throw new Error(`Unknown question ID: ${questionId}`);
+            }
+
+            // Call Claude API
+            const message = await this.anthropic.messages.create({
+                model: DEFAULT_MODEL,
+                max_tokens: MAX_TOKENS,
+                messages: [{
+                    role: "user",
+                    content: `${config.prompt}\n\nResponse to analyze: "${response}"`
+                }]
+            });
+
+            // Parse Claude's response
+            const claudeParsed = JSON.parse(message.content[0].text);
+
+            // Validate with existing methods
+            const validator = this[`parse${questionId.charAt(0).toUpperCase() + questionId.slice(1)}`].bind(this);
+            const validatedResponse = await validator(response);
+
+            // Merge Claude's insights with validated data
+            const mergedResponse = {
+                ...validatedResponse,
+                ...claudeParsed,
+                confidence: Math.max(validatedResponse.confidence, claudeParsed.confidence)
+            };
+
+            // Save the response
+            await this.saveResponse(questionId as QuestionId, response, mergedResponse);
+
+            return mergedResponse;
+
+        } catch (error) {
+            this.logger.error(`Error parsing response for ${questionId}:`, error);
+            throw error;
         }
     }
 
-    private async parseBirthDate(response: string) {
-        const decade = this.identifyDecade(response);
-        const exactYear = this.extractExactYear(response);
-        const culturalEra = this.identifyCulturalEra(response) || [];
-        const technologicalEra = this.identifyTechEra(response) || [];
-        
-        return {
-            decade,
-            exactYear,
-            generationalCusp: this.isGenerationalCusp(decade, exactYear),
-            culturalEra,
-            technologicalEra,
-            confidence: this.calculateConfidence([decade, ...culturalEra, ...technologicalEra])
-        };
+    // Existing parsing methods
+    private async parseBirthDate(response: string): Promise<ParsedBirthDate> {
+        try {
+            return {
+                decade: this.identifyDecade(response),
+                exactYear: this.extractExactYear(response),
+                generationalCusp: false,
+                culturalEra: [],
+                technologicalEra: [],
+                confidence: 0.5
+            };
+        } catch (error) {
+            this.logger.error('Error parsing birth date:', error);
+            throw error;
+        }
     }
 
-    private async parseBackground(response: string) {
-        const location = this.extractLocation(response);
-        const socioEconomic = this.identifySocioEconomicContext(response);
-        const environment = this.identifyEnvironment(response);
-        const culturalContext = this.extractCulturalContext(response) || [];
-        
-        return {
-            location,
-            socioEconomic,
-            environment,
-            culturalContext,
-            communityType: this.identifyCommunityType(response),
-            confidence: this.calculateConfidence([location, socioEconomic, environment])
-        };
+    private async parseBackground(response: string): Promise<ParsedBackground> {
+        try {
+            return {
+                location: 'unknown',
+                socioEconomic: this.identifySocioEconomicContext(response),
+                environment: 'unknown',
+                culturalContext: [],
+                communityType: 'unknown',
+                confidence: 0.5
+            };
+        } catch (error) {
+            this.logger.error('Error parsing background:', error);
+            throw error;
+        }
     }
 
-    private async parseInfluences(response: string) {
-        return {
-            events: this.extractEvents(response) || [],
-            technologies: this.extractTechnologies(response) || [],
-            socialChanges: this.extractSocialChanges(response) || [],
-            personalImpact: this.extractPersonalImpact(response) || [],
-            timeframe: this.extractTimeframe(response) || '',
-            confidence: 0.5 // Default confidence for now
-        };
+    private async parseInfluences(response: string): Promise<ParsedInfluences> {
+        try {
+            return {
+                events: [],
+                technologies: [],
+                socialChanges: [],
+                personalImpact: [],
+                timeframe: '',
+                confidence: 0.5
+            };
+        } catch (error) {
+            this.logger.error('Error parsing influences:', error);
+            throw error;
+        }
     }
 
-    private async parseCurrentFocus(response: string) {
-        return {
-            themes: this.extractThemes(response) || [],
-            concerns: this.extractConcerns(response) || [],
-            outlook: this.extractOutlook(response) || '',
-            generationalPerspective: this.identifyGenerationalPerspective(response) || '',
-            confidence: 0.5 // Default confidence for now
-        };
+    private async parseCurrentFocus(response: string): Promise<ParsedCurrentFocus> {
+        try {
+            return {
+                themes: [],
+                concerns: [],
+                outlook: '',
+                generationalPerspective: '',
+                confidence: 0.5
+            };
+        } catch (error) {
+            this.logger.error('Error parsing current focus:', error);
+            throw error;
+        }
+    }
+
+    private async saveResponse(questionId: QuestionId, response: string, parsedData: any) {
+        try {
+            const res = await fetch('/api/save-response', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    questionId,
+                    response,
+                    parsedData
+                })
+            });
+            if (!res.ok) {
+                throw new Error('Failed to save response');
+            }
+            return await res.json();
+        } catch (error) {
+            this.logger.error('Failed to save response:', error);
+            throw error;
+        }
     }
 
     private identifyDecade(text: string): string {
-        for (const [decade, markers] of Object.entries(this.decadeMarkers)) {
-            if (markers.some(marker => text.toLowerCase().includes(marker.toLowerCase()))) {
-                return decade;
+        try {
+            for (const [decade, markers] of Object.entries(this.decadeMarkers)) {
+                if (markers.some(marker => text.toLowerCase().includes(marker.toLowerCase()))) {
+                    return decade;
+                }
             }
+            return 'unknown';
+        } catch (error) {
+            this.logger.error('Error identifying decade:', error);
+            return 'unknown';
         }
-        return 'unknown';
     }
 
     private extractExactYear(text: string): string | undefined {
-        const yearMatch = text.match(/\b(19|20)\d{2}\b/);
-        return yearMatch ? yearMatch[0] : undefined;
-    }
-
-    private isGenerationalCusp(decade: string, year?: string): boolean {
-        if (!year) return false;
-        const yearNum = parseInt(year);
-        const cuspYears = [1981, 1996, 2012];
-        return cuspYears.some(cuspYear => Math.abs(yearNum - cuspYear) <= 2);
+        try {
+            const yearMatch = text.match(/\b(19|20)\d{2}\b/);
+            return yearMatch ? yearMatch[0] : undefined;
+        } catch (error) {
+            this.logger.error('Error extracting year:', error);
+            return undefined;
+        }
     }
 
     private identifySocioEconomicContext(text: string): string {
-        for (const [context, markers] of Object.entries(this.socioEconomicMarkers)) {
-            if (markers.some(marker => text.toLowerCase().includes(marker.toLowerCase()))) {
-                return context;
+        try {
+            for (const [context, markers] of Object.entries(this.socioEconomicMarkers)) {
+                if (markers.some(marker => text.toLowerCase().includes(marker.toLowerCase()))) {
+                    return context;
+                }
             }
+            return 'unknown';
+        } catch (error) {
+            this.logger.error('Error identifying socio-economic context:', error);
+            return 'unknown';
         }
-        return 'unknown';
-    }
-
-    private identifyTechEra(text: string): string[] {
-        const eras: string[] = [];
-        for (const [era, markers] of Object.entries(this.technologyMarkers)) {
-            if (markers.some(marker => text.toLowerCase().includes(marker.toLowerCase()))) {
-                eras.push(era);
-            }
-        }
-        return eras;
-    }
-
-    private identifyCulturalEra(text: string): string[] {
-        return [];
-    }
-
-    private identifyEnvironment(text: string): string {
-        return 'unknown';
-    }
-
-    private identifyCommunityType(text: string): string {
-        return 'unknown';
-    }
-
-    private extractLocation(text: string): string {
-        return text.length > 0 ? text : 'unknown';
-    }
-
-    private extractCulturalContext(text: string): string[] {
-        return [];
-    }
-
-    private extractTechnologies(text: string): string[] {
-        return [];
-    }
-
-    private extractSocialChanges(text: string): string[] {
-        return [];
-    }
-
-    private extractPersonalImpact(text: string): string[] {
-        return [];
-    }
-
-    private extractEvents(text: string): string[] {
-        return [];
-    }
-
-    private extractTimeframe(text: string): string {
-        return '';
-    }
-
-    private extractThemes(text: string): string[] {
-        return [];
-    }
-
-    private extractConcerns(text: string): string[] {
-        return [];
-    }
-
-    private extractOutlook(text: string): string {
-        return '';
-    }
-
-    private identifyGenerationalPerspective(text: string): string {
-        return '';
-    }
-
-    private calculateConfidence(markers: (string | string[])[]): number {
-        const flatMarkers = markers.flat().filter(m => m && m !== 'unknown');
-        return Math.min(flatMarkers.length * 0.2, 1);
     }
 }
