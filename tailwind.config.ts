@@ -9,9 +9,19 @@ export default {
   theme: {
     extend: {
       colors: {
-        background: "var(--background)",
-        foreground: "var(--foreground)",
+        primary: '#FCCA46',
+        secondary: '#1A89CC',
+        dark: '#232C33',
+        background: '#F7E1D7',
+        text: {
+          DEFAULT: '#232C33',
+          light: '#4A5561',
+        }
       },
+      fontFamily: {
+        jakarta: ['var(--font-plus-jakarta)'],
+        sans: ['var(--font-outfit)'],
+      }
     },
   },
   plugins: [],
