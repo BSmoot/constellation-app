@@ -48,55 +48,45 @@ export default function OnboardingForm() {
     }
   }
 
-// MODIFY: The handleNext function
-async function handleNext() {
-  setIsProcessing(true)
-  try {
+  async function handleNext() {
+    setIsProcessing(true)
+    
+    try {
       if (currentStep < onboardingQuestions.length - 1) {
-          setCurrentStep(prev => prev + 1)
+        setCurrentStep(prev => prev + 1)
       } else {
-          const smartSystem = new SmartFollowUpSystem()
-          const analysis = smartSystem.analyzeResponses(storyData)
-          if (analysis.needsFollowUp) {
-              const followUpQuestion = smartSystem.generateFollowUp(analysis)
-              console.log('Follow up needed:', followUpQuestion)
-              return
-          }
-
-          const parser = new GenerationalContextParser()
-          const parsedResponses = await Object.keys(storyData).reduce(
-              async (acc, questionId) => {
-                  const parsed = await parser.parseResponse(questionId, storyData[questionId])
-                  await parser.saveResponse(
-                      questionId as QuestionId,
-                      storyData[questionId],
-                      parsed
-                  )
-                  return {
-                      ...await acc,
-                      [questionId]: parsed
-                  }
-              },
-              Promise.resolve({})
-          )
-
-          // CHANGED: Added check for window before using localStorage
-          if (typeof window !== 'undefined') {
-              localStorage.setItem('onboarding-step-one', JSON.stringify({
-                  raw: storyData,
-                  parsed: parsedResponses,
-                  analysis: analysis
-              }))
-          }
-          
-          router.push('/onboarding/step-two')
+        const smartSystem = new SmartFollowUpSystem()
+        const analysis = smartSystem.analyzeResponses(storyData)
+  
+        if (analysis.needsFollowUp) {
+          const followUpQuestion = smartSystem.generateFollowUp(analysis)
+          console.log('Follow up needed:', followUpQuestion)
+          return
+        }
+  
+        const parser = new GenerationalContextParser()
+        const parsedResponses = await Object.keys(storyData).reduce(
+          async (acc, questionId) => ({
+            ...await acc,
+            [questionId]: await parser.parseResponse(questionId, storyData[questionId])
+          }),
+          Promise.resolve({})
+        )
+        
+        localStorage.setItem('onboarding-step-one', JSON.stringify({
+          raw: storyData,
+          parsed: parsedResponses,
+          analysis: analysis
+        }))
+        
+        router.push('/onboarding/step-two')
       }
-  } catch (error) {
+    } catch (error) {
       console.error('Error processing input:', error)
-  } finally {
+    } finally {
       setIsProcessing(false)
+    }
   }
-}
 
   return (
     <div className="space-y-4">
