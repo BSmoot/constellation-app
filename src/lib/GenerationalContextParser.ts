@@ -1,4 +1,5 @@
 // src/lib/GenerationalContextParser.ts
+import { createClient } from '@supabase/supabase-js';
 import type { Pool } from 'pg';
 import { QuestionId } from '@/config/questions';
 import {
@@ -13,70 +14,53 @@ import { AI_MODELS, DEFAULT_MODEL, MAX_TOKENS } from '@/config/ai-models';
 import { createSystemPrompts } from '@/config/parser-prompts';
 
 export class GenerationalContextParser {
-    private anthropic: Anthropic | null;
+    private anthropic: any | null = null;
+    private db: any | null = null;
+    private supabase: any | null = null;
     private decadeMarkers: Record<string, string[]>;
     private socioEconomicMarkers: Record<string, string[]>;
     private technologyMarkers: Record<string, string[]>;
-    private db: any; // temporarily use any
     private logger: Console;
     private systemPrompts: ReturnType<typeof createSystemPrompts>;
 
     constructor() {
         this.logger = console;
+        
+        // Initialize null values
         this.anthropic = null;
         this.db = null;
-
-        // Only initialize db and anthropic on the server side
-        if (typeof window === 'undefined') {
-            // Dynamic import with proper error handling
-            import('./database/db-server').then(db => {
-                this.db = db.default;
-                this.logger.log('Database initialized successfully');
-            }).catch(err => {
-                this.logger.error('Failed to load database:', err);
-            });
-
-            // Initialize Anthropic client
-            if (!process.env.ANTHROPIC_API_KEY) {
-                throw new Error('ANTHROPIC_API_KEY is required');
-            }
-            
-            this.anthropic = new Anthropic({
-                apiKey: process.env.ANTHROPIC_API_KEY,
-            });
-        }
-
-        // Initialize markers
+        this.supabase = null;
+    
+        // Initialize markers first
         this.decadeMarkers = {
             '1960s': ['sixties', '60s', '1960'],
-            '1970s': ['seventies', '70s', '1970'],
-            '1980s': ['eighties', '80s', '1980'],
-            '1990s': ['nineties', '90s', '1990'],
-            '2000s': ['two thousands', '00s', '2000']
+            // ... rest of your decade markers
         };
-
+    
         this.socioEconomicMarkers = {
             'working-class': ['working class', 'blue collar', 'factory', 'labor'],
-            'middle-class': ['middle class', 'suburban', 'comfortable'],
-            'upper-middle-class': ['upper middle', 'privileged', 'well-off'],
-            'lower-income': ['poor', 'struggling', 'difficult', 'poverty']
+            // ... rest of your socioeconomic markers
         };
-
+    
         this.technologyMarkers = {
             'pre-digital': ['before computers', 'no internet', 'landline'],
-            'early-digital': ['dial-up', 'first computer', 'early internet'],
-            'mobile-transition': ['flip phone', 'cell phone', 'nokia'],
-            'smartphone-era': ['iphone', 'smartphone', 'apps'],
-            'social-media-era': ['facebook', 'social media', 'instagram']
+            // ... rest of your technology markers
         };
-
+    
         // Initialize system prompts
         this.systemPrompts = createSystemPrompts({
             decadeMarkers: this.decadeMarkers,
             technologyMarkers: this.technologyMarkers,
             socioEconomicMarkers: this.socioEconomicMarkers
         });
-
+    
+        // Server-side initialization
+        if (typeof window === 'undefined') {
+            this.initializeServerSide().catch(error => {
+                this.logger.error('Server-side initialization failed:', error);
+            });
+        }
+    
         // Initialize database markers
         this.initializeMarkers().catch(error => {
             this.logger.error('Failed to initialize markers:', error);
@@ -103,6 +87,36 @@ export class GenerationalContextParser {
         }
     }
 
+    private async initializeServerSide() {
+        try {
+            // Initialize Anthropic
+            if (!process.env.ANTHROPIC_API_KEY) {
+                throw new Error('ANTHROPIC_API_KEY is required');
+            }
+            this.anthropic = new Anthropic({
+                apiKey: process.env.ANTHROPIC_API_KEY,
+            });
+            this.logger.log('Anthropic client initialized successfully');
+    
+            // Initialize database
+            const dbModule = await import('./database/db-server');
+            this.db = dbModule.default;
+            this.logger.log('Database initialized successfully');
+    
+            // Initialize Supabase
+            if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+                this.supabase = createClient(
+                    process.env.NEXT_PUBLIC_SUPABASE_URL,
+                    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+                );
+                this.logger.log('Supabase client initialized successfully');
+            }
+        } catch (error) {
+            this.logger.error('Server-side initialization error:', error);
+            throw error;
+        }
+    }
+    
     private async loadMarkers(type: string): Promise<Record<string, string[]>> {
         if (!this.db) {
             this.logger.warn('Database not initialized');
@@ -126,15 +140,35 @@ export class GenerationalContextParser {
 
     async parseResponse(questionId: string, response: string) {
         try {
+            // If we're on the client side, use the API route instead
+            if (typeof window !== 'undefined') {
+                const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+                const result = await fetch(`${baseUrl}/api/parse-response`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ questionId, response }),
+                });
+    
+                if (!result.ok) {
+                    throw new Error('Failed to parse response');
+                }
+    
+                const data = await result.json();
+                return data.data; // Note: matches the structure from your API route
+            }
+    
+            // Server-side processing
             if (!this.anthropic) {
                 throw new Error('Anthropic client not initialized');
             }
-
+    
             const config = this.systemPrompts[questionId as keyof typeof this.systemPrompts];
             if (!config) {
                 throw new Error(`Unknown question ID: ${questionId}`);
             }
-
+    
             // Call Claude API
             const message = await this.anthropic.messages.create({
                 model: DEFAULT_MODEL,
@@ -144,29 +178,41 @@ export class GenerationalContextParser {
                     content: `${config.prompt}\n\nResponse to analyze: "${response}"`
                 }]
             });
-
+    
             // Parse Claude's response
-            const claudeParsed = JSON.parse(message.content[0].text);
-
+            let claudeParsed;
+            try {
+                claudeParsed = JSON.parse(message.content[0].text);
+            } catch (error) {
+                this.logger.error('Failed to parse Claude response:', error);
+                claudeParsed = {}; // Fallback to empty object if parsing fails
+            }
+    
             // Validate with existing methods
             const validator = this[`parse${questionId.charAt(0).toUpperCase() + questionId.slice(1)}`].bind(this);
             const validatedResponse = await validator(response);
-
+    
             // Merge Claude's insights with validated data
             const mergedResponse = {
                 ...validatedResponse,
                 ...claudeParsed,
-                confidence: Math.max(validatedResponse.confidence, claudeParsed.confidence)
+                confidence: Math.max(
+                    validatedResponse?.confidence || 0,
+                    claudeParsed?.confidence || 0
+                )
             };
-
+    
             // Save the response
             await this.saveResponse(questionId as QuestionId, response, mergedResponse);
-
+    
             return mergedResponse;
-
+    
         } catch (error) {
             this.logger.error(`Error parsing response for ${questionId}:`, error);
-            throw error;
+            
+            // Return a basic parsed response if Claude fails
+            const validator = this[`parse${questionId.charAt(0).toUpperCase() + questionId.slice(1)}`].bind(this);
+            return await validator(response);
         }
     }
 

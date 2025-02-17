@@ -10,12 +10,12 @@ export default function StepOnePage() {
         <header className="mb-8 space-y-2">
           <div className="h-[48px] flex items-center justify-center">
             <h1 className="text-4xl md:text-5xl font-bold text-dark font-jakarta">
-              Let's Make History!
+              Let's Make History.
             </h1>
           </div>
           <div className="h-[32px] flex items-center justify-center">
             <p className="text-lg md:text-xl text-text-light font-jakarta">
-              Map your life's context and find your REAL generation
+              Map the context of your life and find your REAL generation
             </p>
           </div>
         </header>

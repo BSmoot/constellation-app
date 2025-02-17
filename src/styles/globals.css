@@ -1,0 +1,27 @@
+// src/styles/globals.css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    --color-primary: 243, 82, 47;
+    --color-success: 16, 185, 129;
+}
+
+@layer components {
+    .text-primary {
+        color: rgb(var(--color-primary));
+    }
+    
+    .bg-primary {
+        background-color: rgb(var(--color-primary));
+    }
+    
+    .border-primary {
+        border-color: rgb(var(--color-primary));
+    }
+    
+    .ring-primary {
+        --tw-ring-color: rgb(var(--color-primary));
+    }
+}

@@ -1,150 +1,173 @@
-'use client'
+// src/app/onboarding/step-two/page.tsx
+'use client';
 
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useEffect, useState } from 'react';
+import { GenerationSelector } from './GenerationSelector';
+import { useRouter } from 'next/navigation';
 
-export default function StepTwoPage() {
-  const router = useRouter()
-  const [parsedData, setParsedData] = useState<ParsedData | null>(null)
-  const [isLoading, setIsLoading] = useState(true) // Add loading state
+// Generation data
+const MAIN_GENERATIONS = [
+    {
+        name: "Baby Boomer",
+        years: "1946-1964",
+    },
+    {
+        name: "Generation X",
+        years: "1965-1980",
+    },
+    {
+        name: "Millennial",
+        years: "1981-1996",
+    },
+    {
+        name: "Generation Z",
+        years: "1997-2012",
+    },
+    {
+        name: "Generation Alpha",
+        years: "2013-Present",
+    }
+];
 
-  useEffect(() => {
+const MICRO_GENERATIONS = [
+    {
+        name: "Generation Jones",
+        years: "1954-1965",
+        description: "Late Boomers with different cultural experiences"
+    },
+    {
+        name: "Xennials",
+        years: "1977-1983",
+        description: "Analog childhood, digital young adulthood"
+    },
+    {
+        name: "Zillennials",
+        years: "1994-1998",
+        description: "Cusp of Millennials and Gen Z"
+    }
+];
+
+function determineInitialGeneration(data: any) {
+    if (!data || !data.birthDate) {
+        console.warn('No birth date found in data:', data);
+        return 'Unknown Generation';
+    }
+
     try {
-      const savedData = localStorage.getItem('onboarding-step-one')
-      if (savedData) {
-        setParsedData(JSON.parse(savedData))
-      }
+        const birthYear = new Date(data.birthDate).getFullYear();
+        console.log('Determined birth year:', birthYear);
+
+        if (birthYear >= 2013) return "Generation Alpha";
+        if (birthYear >= 1997) return "Generation Z";
+        if (birthYear >= 1981) return "Millennial";
+        if (birthYear >= 1965) return "Generation X";
+        if (birthYear >= 1946) return "Baby Boomer";
+        return "Traditionalist";
     } catch (error) {
-      console.error('Error loading data:', error)
-    } finally {
-      setIsLoading(false)
+        console.error('Error determining generation:', error);
+        return 'Unknown Generation';
     }
-  }, [])
+}
 
-  const handleStartOver = () => {
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('onboarding-step-one')
+export default function StepTwo() {
+    const router = useRouter();
+    const [initialData, setInitialData] = useState<any>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [savingGeneration, setSavingGeneration] = useState(false);
+
+    useEffect(() => {
+        try {
+            const stepOneData = localStorage.getItem('onboarding-step-one');
+            if (!stepOneData) {
+                router.push('/onboarding/step-one');
+                return;
+            }
+            const parsedData = JSON.parse(stepOneData);
+            console.log('Loaded from localStorage:', parsedData);
+            setInitialData(parsedData);
+            setLoading(false);
+        } catch (error) {
+            console.error('Error loading initial data:', error);
+            setError('Failed to load your previous responses');
+            setLoading(false);
+        }
+    }, [router]);
+
+    async function handleGenerationSelect(generation: string) {
+        setSavingGeneration(true);
+        setError(null);
+
+        try {
+            console.log('Saving generation:', generation);
+
+            const response = await fetch('/api/generations/select', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    generation,
+                    birthDate: initialData?.birthDate,
+                    userId: initialData?.userId || 'anonymous'
+                }),
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to save generation selection');
+            }
+
+            // Update localStorage
+            if (initialData) {
+                const updatedData = {
+                    ...initialData,
+                    selectedGeneration: generation
+                };
+                localStorage.setItem('onboarding-step-one', JSON.stringify(updatedData));
+                console.log('Updated localStorage:', updatedData);
+            }
+        } catch (error: any) {
+            console.error('Error saving generation selection:', error);
+            setError(error.message || 'Failed to save generation selection');
+        } finally {
+            setSavingGeneration(false);
+        }
     }
-    router.push('/onboarding/step-one')
-  }
 
-  if (isLoading) {
-    return <div>Loading...</div>
-  }
+    if (loading) {
+        return (
+            <div className="min-h-screen flex items-center justify-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-[#F3522F]"></div>
+            </div>
+        );
+    }
 
-  if (!parsedData) {
-    router.push('/onboarding/step-one')
-    return null
-  }
-
-  return (
-    <main className="min-h-screen bg-[#E9F1F7] py-8">
-      <div className="max-w-4xl mx-auto px-4">
-        <div className="flex justify-between items-center mb-6">
-          <h1 className="text-3xl font-bold text-black">Parsing Results</h1>
-          <button 
-            onClick={handleStartOver}
-            className="px-6 py-3 bg-[#F3522F] text-white rounded-lg 
-                     hover:bg-[#f4633f] transition-colors duration-200"
-          >
-            Back to Beginning
-          </button>
-        </div>
-        
-        <div className="space-y-8">
-          {/* Original Responses */}
-          <section className="bg-white rounded-lg p-6 shadow-sm">
-            <h2 className="text-xl font-semibold text-black mb-4">Original Responses</h2>
-            {Object.entries(parsedData.raw).map(([key, value]) => (
-              <div key={key} className="mb-4">
-                <h3 className="font-medium text-black">{key}:</h3>
-                <p className="mt-1 text-gray-600">{value}</p>
-              </div>
-            ))}
-          </section>
-
-          {/* Parsed Birth Date */}
-          <section className="bg-white rounded-lg p-6 shadow-sm">
-            <h2 className="text-xl font-semibold text-black mb-4">Birth Date Analysis</h2>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <h3 className="font-medium text-black">Decade:</h3>
-                <p className="mt-1 text-gray-600">{parsedData.parsed.birthDate.decade}</p>
-              </div>
-              {parsedData.parsed.birthDate.exactYear && (
-                <div>
-                  <h3 className="font-medium text-black">Exact Year:</h3>
-                  <p className="mt-1 text-gray-600">{parsedData.parsed.birthDate.exactYear}</p>
+    return (
+        <div className="max-w-4xl mx-auto px-4 py-8">
+            <h1 className="text-3xl font-semibold text-gray-900 mb-6">
+                Thanks! Now let's refine your results.
+            </h1>
+            
+            {error && (
+                <div className="mb-4 p-4 bg-red-50 border border-red-200 text-red-700 rounded">
+                    {error}
                 </div>
-              )}
-              <div>
-                <h3 className="font-medium text-black">Generational Cusp:</h3>
-                <p className="mt-1 text-gray-600">
-                  {parsedData.parsed.birthDate.generationalCusp ? 'Yes' : 'No'}
-                </p>
-              </div>
-              <div>
-                <h3 className="font-medium text-black">Confidence:</h3>
-                <p className="mt-1 text-gray-600">
-                  {(parsedData.parsed.birthDate.confidence * 100).toFixed(1)}%
-                </p>
-              </div>
-            </div>
-            {parsedData.parsed.birthDate.culturalEra.length > 0 && (
-              <div className="mt-4">
-                <h3 className="font-medium text-black">Cultural Era Markers:</h3>
-                <ul className="mt-1 list-disc list-inside text-gray-600">
-                  {parsedData.parsed.birthDate.culturalEra.map((era, i) => (
-                    <li key={i}>{era}</li>
-                  ))}
-                </ul>
-              </div>
             )}
-          </section>
 
-          {/* Background Analysis */}
-          <section className="bg-white rounded-lg p-6 shadow-sm">
-            <h2 className="text-xl font-semibold text-black mb-4">Background Analysis</h2>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <h3 className="font-medium text-black">Location:</h3>
-                <p className="mt-1 text-gray-600">{parsedData.parsed.background.location}</p>
-              </div>
-              <div>
-                <h3 className="font-medium text-black">Socio-Economic Context:</h3>
-                <p className="mt-1 text-gray-600">{parsedData.parsed.background.socioEconomic}</p>
-              </div>
-              <div>
-                <h3 className="font-medium text-black">Environment:</h3>
-                <p className="mt-1 text-gray-600">{parsedData.parsed.background.environment}</p>
-              </div>
-              <div>
-                <h3 className="font-medium text-black">Community Type:</h3>
-                <p className="mt-1 text-gray-600">{parsedData.parsed.background.communityType}</p>
-              </div>
-            </div>
-          </section>
+            <GenerationSelector
+                initialGeneration={determineInitialGeneration(initialData)}
+                mainGenerations={MAIN_GENERATIONS}
+                microGenerations={MICRO_GENERATIONS}
+                onSelect={handleGenerationSelect}
+            />
 
-          {/* Analysis Summary */}
-          <section className="bg-white rounded-lg p-6 shadow-sm">
-            <h2 className="text-xl font-semibold text-black mb-4">Analysis Summary</h2>
-            <div>
-              <h3 className="font-medium text-black">Needs Follow-up:</h3>
-              <p className="mt-1 text-gray-600">{parsedData.analysis.needsFollowUp ? 'Yes' : 'No'}</p>
-            </div>
-            {parsedData.analysis.gaps.length > 0 && (
-              <div className="mt-4">
-                <h3 className="font-medium text-black">Information Gaps:</h3>
-                <ul className="mt-1 list-disc list-inside text-gray-600">
-                  {parsedData.analysis.gaps.map((gap, i) => (
-                    <li key={i}>{gap}</li>
-                  ))}
-                </ul>
-              </div>
+            {savingGeneration && (
+                <div className="mt-4 text-gray-600">
+                    Saving your selection...
+                </div>
             )}
-          </section>
         </div>
-      </div>
-    </main>
-  )
+    );
 }

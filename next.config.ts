@@ -15,6 +15,13 @@ const nextConfig: NextConfig = {
     }
     return config;
   },
+  experimental: {
+    turbo: {
+      rules: {
+        // Add any specific Turbopack rules here
+      }
+    }
+  }
 };
 
 export default nextConfig;
