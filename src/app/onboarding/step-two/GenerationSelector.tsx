@@ -1,10 +1,10 @@
 // src/app/onboarding/step-two/GenerationSelector.tsx
 'use client';
 
-import { generationSelectorTheme as theme } from '@/styles/theme/generation-selector';
 import { useState, useEffect } from 'react';
 import { CheckCircleIcon } from '@heroicons/react/24/solid';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
+import { generationSelectorTheme as theme } from '@/styles/theme/generation-selector';
 
 interface GenerationOption {
     name: string;
@@ -35,13 +35,6 @@ export function GenerationSelector({
         setSelectedGeneration(initialGeneration);
     }, [initialGeneration]);
 
-    const handleSelect = (generation: string) => {
-        setSelectedGeneration(generation);
-        onSelect(generation);
-        setIsEditing(false);
-        setIsConfirmed(true);
-    };
-
     if (!mounted) {
         return (
             <div className={theme.container}>
@@ -51,6 +44,13 @@ export function GenerationSelector({
             </div>
         );
     }
+
+    const handleSelect = (generation: string) => {
+        setSelectedGeneration(generation);
+        onSelect(generation);
+        setIsEditing(false);
+        setIsConfirmed(true);
+    };
 
     return (
         <div className={theme.container}>
@@ -65,7 +65,7 @@ export function GenerationSelector({
                                 className={theme.header.selectedText}
                                 onClick={() => setIsEditing(true)}
                             >
-                                {selectedGeneration || 'Loading...'}
+                                {selectedGeneration}
                             </span>
                         </>
                     )}

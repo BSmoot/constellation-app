@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { GenerationSelector } from './GenerationSelector';
 import { useRouter } from 'next/navigation';
 
-// Generation data
+// Constants
 const MAIN_GENERATIONS = [
     {
         name: "Baby Boomer",
@@ -47,7 +47,14 @@ const MICRO_GENERATIONS = [
     }
 ];
 
-function determineInitialGeneration(data: any) {
+// Types
+interface StepOneData {
+    birthDate: string;
+    anonymousId?: string;
+    selectedGeneration?: string;
+}
+
+function determineInitialGeneration(data: StepOneData | null) {
     if (!data || !data.birthDate) {
         console.warn('No birth date found in data:', data);
         return 'Unknown Generation';
@@ -71,20 +78,40 @@ function determineInitialGeneration(data: any) {
 
 export default function StepTwo() {
     const router = useRouter();
-    const [initialData, setInitialData] = useState<any>(null);
+    const [mounted, setMounted] = useState(false);
+    const [initialData, setInitialData] = useState<StepOneData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [savingGeneration, setSavingGeneration] = useState(false);
+    const [anonymousId, setAnonymousId] = useState<string | null>(null);
 
+    // Handle mounting
     useEffect(() => {
+        setMounted(true);
+    }, []);
+
+    // Handle data loading after mount
+    useEffect(() => {
+        if (!mounted) return;
+
         try {
+            // First, try to get existing anonymous ID
+            let storedAnonymousId = localStorage.getItem('anonymousId');
+            if (storedAnonymousId) {
+                setAnonymousId(storedAnonymousId);
+                console.log('Found existing anonymous ID:', storedAnonymousId);
+            }
+
+            // Get step one data
             const stepOneData = localStorage.getItem('onboarding-step-one');
             if (!stepOneData) {
+                console.log('No step one data found, redirecting...');
                 router.push('/onboarding/step-one');
                 return;
             }
-            const parsedData = JSON.parse(stepOneData);
-            console.log('Loaded from localStorage:', parsedData);
+
+            // Parse and store the data
+            const parsedData = JSON.parse(stepOneData) as StepOneData;
+            console.log('Loaded step one data:', parsedData);
             setInitialData(parsedData);
             setLoading(false);
         } catch (error) {
@@ -92,24 +119,27 @@ export default function StepTwo() {
             setError('Failed to load your previous responses');
             setLoading(false);
         }
-    }, [router]);
+    }, [mounted, router]);
+
+    // Don't render anything until mounted
+    if (!mounted) {
+        return null;
+    }
 
     async function handleGenerationSelect(generation: string) {
-        setSavingGeneration(true);
-        setError(null);
-
         try {
             console.log('Saving generation:', generation);
+            setError(null);
 
             const response = await fetch('/api/generations/select', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                     generation,
-                    birthDate: initialData?.birthDate,
-                    userId: initialData?.userId || 'anonymous'
+                    anonymousId,
+                    birthDate: initialData?.birthDate
                 }),
             });
 
@@ -119,20 +149,24 @@ export default function StepTwo() {
                 throw new Error(data.error || 'Failed to save generation selection');
             }
 
-            // Update localStorage
+            if (data.anonymousId) {
+                localStorage.setItem('anonymousId', data.anonymousId);
+                setAnonymousId(data.anonymousId);
+                console.log('Saved new anonymous ID:', data.anonymousId);
+            }
+
             if (initialData) {
                 const updatedData = {
                     ...initialData,
-                    selectedGeneration: generation
+                    selectedGeneration: generation,
+                    anonymousId: data.anonymousId || anonymousId
                 };
                 localStorage.setItem('onboarding-step-one', JSON.stringify(updatedData));
-                console.log('Updated localStorage:', updatedData);
+                console.log('Updated local storage:', updatedData);
             }
         } catch (error: any) {
             console.error('Error saving generation selection:', error);
             setError(error.message || 'Failed to save generation selection');
-        } finally {
-            setSavingGeneration(false);
         }
     }
 
@@ -162,12 +196,6 @@ export default function StepTwo() {
                 microGenerations={MICRO_GENERATIONS}
                 onSelect={handleGenerationSelect}
             />
-
-            {savingGeneration && (
-                <div className="mt-4 text-gray-600">
-                    Saving your selection...
-                </div>
-            )}
         </div>
     );
 }
