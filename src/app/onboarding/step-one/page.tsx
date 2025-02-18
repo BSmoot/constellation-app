@@ -15,7 +15,7 @@ export default function StepOnePage() {
           </div>
           <div className="h-[32px] flex items-center justify-center">
             <p className="text-lg md:text-xl text-text-light font-jakarta">
-              Map the context of your life and find your REAL generation
+              Map a constellation and connect to your REAL generation
             </p>
           </div>
         </header>

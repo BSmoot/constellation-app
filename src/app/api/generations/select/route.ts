@@ -56,8 +56,8 @@ export async function POST(req: Request) {
         }
 
         // Use session ID, cookie ID, or client-provided anonymous ID
-        const userId = session?.user?.id || 
-                      cookies().get('anonymousId')?.value || 
+        const userId = session?.user?.id ||
+                      cookies().get('anonymousId')?.value ||
                       clientAnonymousId;
 
         if (!userId) {
@@ -71,25 +71,39 @@ export async function POST(req: Request) {
             });
 
             // Use the new anonymous ID
-            const result = await supabase
-                .from('user_generations')
-                .insert({
-                    user_id: newAnonymousId,
-                    generation,
-                    birth_date: birthDate,
-                    created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString()
-                })
-                .select()
-                .single();
+            const [generationResult, onboardingResult] = await Promise.all([
+                supabase
+                    .from('user_generations')
+                    .insert({
+                        user_id: newAnonymousId,
+                        generation,
+                        birth_date: birthDate,
+                        created_at: new Date().toISOString(),
+                        updated_at: new Date().toISOString()
+                    })
+                    .select()
+                    .single(),
+                supabase
+                    .from('onboarding_responses')
+                    .insert({
+                        user_id: newAnonymousId,
+                        question_id: 'generation_selection',
+                        response: generation
+                    })
+            ]);
 
-            if (result.error) {
-                throw result.error;
+            if (generationResult.error) {
+                throw generationResult.error;
+            }
+
+            if (onboardingResult.error) {
+                console.error('Onboarding response error:', onboardingResult.error);
+                // Continue even if onboarding response fails
             }
 
             return NextResponse.json({
                 success: true,
-                data: result.data,
+                data: generationResult.data,
                 anonymousId: newAnonymousId,
                 message: `Successfully saved generation: ${generation}`
             });
@@ -114,11 +128,11 @@ export async function POST(req: Request) {
             );
         }
 
-        let result;
+        let generationResult;
 
         if (existingData) {
             // Update existing record
-            result = await supabase
+            generationResult = await supabase
                 .from('user_generations')
                 .update({
                     generation,
@@ -130,7 +144,7 @@ export async function POST(req: Request) {
                 .single();
         } else {
             // Insert new record
-            result = await supabase
+            generationResult = await supabase
                 .from('user_generations')
                 .insert({
                     user_id: userId,
@@ -143,7 +157,21 @@ export async function POST(req: Request) {
                 .single();
         }
 
-        const { data, error: saveError } = result;
+        // Save to onboarding_responses regardless of existing data
+        const onboardingResult = await supabase
+            .from('onboarding_responses')
+            .insert({
+                user_id: userId,
+                question_id: 'generation_selection',
+                response: generation
+            });
+
+        if (onboardingResult.error) {
+            console.error('Onboarding response error:', onboardingResult.error);
+            // Continue even if onboarding response fails
+        }
+
+        const { data, error: saveError } = generationResult;
 
         if (saveError) {
             console.error('Save error:', saveError);
