@@ -1,6 +1,15 @@
 // src/app/layout.tsx
-import '@/app/globals.css'
-import { plusJakarta, outfit } from '@/config'
+
+import { Metadata } from 'next'
+import { Plus_Jakarta_Sans } from 'next/font/google'
+import './globals.css'
+
+const jakarta = Plus_Jakarta_Sans({ subsets: ['latin'] })
+
+export const metadata: Metadata = {
+  title: 'Constellation App',
+  description: 'Map your generational experience',
+}
 
 export default function RootLayout({
   children,
@@ -8,8 +17,13 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className={`${plusJakarta.variable} ${outfit.variable}`}>
-      <body className="bg-white">{children}</body>
+    <html lang="en">
+      <head>
+        {/* Remove any manual preload links if they exist */}
+      </head>
+      <body className={jakarta.className}>
+        {children}
+      </body>
     </html>
   )
 }

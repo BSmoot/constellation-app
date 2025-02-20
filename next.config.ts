@@ -1,6 +1,7 @@
 import { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
+  // Keep existing webpack config for database compatibility
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {
@@ -15,12 +16,22 @@ const nextConfig: NextConfig = {
     }
     return config;
   },
+
+  // Update experimental config
   experimental: {
-    turbo: {
-      rules: {
-        // Add any specific Turbopack rules here
-      }
-    }
+    // Remove turbo as it's no longer needed in latest Next.js
+    serverActions: true,
+    typedRoutes: true
+  },
+
+  // Add these recommended settings
+  reactStrictMode: true,
+  swcMinify: true,
+  poweredByHeader: false,
+
+  // Handle keyboard listener issue
+  compiler: {
+    removeConsole: process.env.NODE_ENV === 'production',
   }
 };
 
