@@ -133,4 +133,27 @@ export class SmartFollowUpSystem {
             markers: text.length > 0 ? [text] : []
         };
     }
+
+    private constructPrompt(analysis: AnalysisResult, attemptNumber: number, responses: Record<string, string> | null | undefined): string {
+        // Safely handle potentially undefined responses
+        const responseValues = responses ? Object.values(responses) : [];
+        const existingInfo = this.analyzeResponseContent(responseValues.join(' '));
+        
+        const approachByAttempt = [
+            {
+                focus: "broad historical context",
+                examples: [
+                    "What's your earliest memory of a major world event that affected your community?",
+                    "Which cultural or social movements were most talked about during your childhood?"
+                ]
+            },
+            // ... rest of approachByAttempt array
+        ];
+    
+        const currentApproach = approachByAttempt[attemptNumber % approachByAttempt.length];
+        
+        const basePrompt = `You are helping build connections between people through shared experiences and perspectives...`;
+    
+        return basePrompt;
+    }
 }
