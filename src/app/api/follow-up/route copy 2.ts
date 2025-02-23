@@ -3,32 +3,26 @@
 import { NextResponse } from 'next/server';
 import { followUpSystem } from '@/lib/SmartFollowUpSystem';
 
-// Helper function to extract just the question from LLM response
-function extractQuestion(llmResponse: string): string {
-    // Look for the actual question within quotes
-    const questionMatch = llmResponse.match(/"([^"]+)"/);
-    if (questionMatch) return questionMatch[1];
-
-    // If no quotes, look for the first sentence that ends with a question mark
-    const questionSentence = llmResponse.split(/[.!?]/)
-        .find(sentence => sentence.trim().endsWith('?'));
-    if (questionSentence) return questionSentence.trim();
-
-    // If still no match, take the first sentence
-    const firstSentence = llmResponse.split(/[.!?]/)[0];
-    return firstSentence.trim();
-}
-
 export async function POST(request: Request) {
     try {
         const body = await request.json();
-        const { responses, attempts = 0 } = body;
+        const { responses, attempts, input } = body;
 
         // Enhanced input validation
-        if (!responses) {
+        if (attempts === undefined || !responses) {
             return NextResponse.json({
                 success: false,
-                error: 'Missing responses'
+                error: 'Missing required fields'
+            }, {
+                status: 400
+            });
+        }
+
+        // Validate attempts is a number and within range
+        if (typeof attempts !== 'number' || attempts < 0 || attempts > 3) {
+            return NextResponse.json({
+                success: false,
+                error: 'Invalid attempt number'
             }, {
                 status: 400
             });
@@ -47,12 +41,11 @@ export async function POST(request: Request) {
         try {
             const analysis = followUpSystem.analyzeResponses(responses);
 
-            // If we have all required info or this is step-one-b response, proceed
-            if (!analysis.needsFollowUp || Object.keys(responses).includes('response0')) {
+            // If we have all required info, no need for follow-up
+            if (!analysis.needsFollowUp) {
                 return NextResponse.json({
                     success: true,
                     needsFollowUp: false,
-                    proceedWithUnknown: false,
                     analysis: {
                         hasBirthTimeframe: analysis.hasBirthTimeframe,
                         hasGeography: analysis.hasGeography,
@@ -67,28 +60,21 @@ export async function POST(request: Request) {
                 previousResponses: responses
             });
 
-            // Extract just the question from the LLM response
-            const cleanQuestion = extractQuestion(followUpResponse.question);
+            // Check if we should proceed with unknown generation
+            const shouldProceedWithUnknown = attempts >= 3;
 
             return NextResponse.json({
                 success: true,
-                needsFollowUp: true,
-                proceedWithUnknown: false,
-                question: cleanQuestion,
+                needsFollowUp: !shouldProceedWithUnknown,
+                proceedWithUnknown: shouldProceedWithUnknown,
+                question: followUpResponse.question,
+                targetInfo: followUpResponse.targetInfo,
                 requiredInfo: analysis.missingInfo,
-                
-                // Debug information only included in development
-                ...(process.env.NODE_ENV === 'development' && {
-                    debug: {
-                        rawResponse: followUpResponse.question,
-                        analysis: {
-                            hasBirthTimeframe: analysis.hasBirthTimeframe,
-                            hasGeography: analysis.hasGeography,
-                            extractedInfo: analysis.extractedInfo
-                        },
-                        targetInfo: followUpResponse.targetInfo
-                    }
-                })
+                extractedInfo: analysis.extractedInfo,
+                analysis: {
+                    hasBirthTimeframe: analysis.hasBirthTimeframe,
+                    hasGeography: analysis.hasGeography
+                }
             });
 
         } catch (analysisError) {

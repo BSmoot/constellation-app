@@ -1,5 +1,3 @@
-// src/lib/SmartFollowUpSystem.ts (Part 1)
-
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '@/config/env';
@@ -14,16 +12,30 @@ interface AnalysisResult {
     needsFollowUp: boolean;
     hasBirthTimeframe: boolean;
     hasGeography: boolean;
-    generation?: string;
+    extractedInfo: {
+        birthYear?: number;        // Normalized year
+        birthDecade?: number;      // Normalized decade
+        locations: string[];       // Primary and secondary locations
+        primaryRegion?: string;    // Main geographic region
+        interests?: string[];      // Topics/events of interest
+        culturalMarkers?: string[]; // Cultural identifiers
+    };
     missingInfo: {
         birthTimeframe: boolean;
         geography: boolean;
     };
-    extractedInfo?: {
-        timeframe?: string;
-        locations?: string[];
-        events?: string[];
-        sentiments?: Record<string, string[]>;
+}
+
+interface FollowUpResponse {
+    question: string;           // User-facing question only
+    isEnrichment: boolean;      // Helps determine context
+    debugInfo: {
+        prompt: string;         // Full prompt sent to LLM
+        analysis: AnalysisResult;
+        state: typeof SmartFollowUpSystem.prototype.state;
+        patterns: ReturnType<typeof SmartFollowUpSystem.prototype.getPatternMatches>;
+        previousQuestions: string[];
+        context: string;        // The context/commentary used to generate the question
     };
 }
 
@@ -31,7 +43,16 @@ class SmartFollowUpSystem {
     private anthropic: any | null = null;
     private supabase: any | null = null;
     private logger: Console;
-    private previousQuestions: string[] = [];
+    private previousQuestions: Set<string> = new Set();
+    private state: {
+        currentAttempt: number;
+        lastAnalysis: AnalysisResult | null;
+        enrichmentPhase: boolean;
+    } = {
+        currentAttempt: 0,
+        lastAnalysis: null,
+        enrichmentPhase: false
+    };
 
     constructor() {
         this.logger = console;
@@ -39,6 +60,14 @@ class SmartFollowUpSystem {
             this.initializeServerSide().catch(error => {
                 this.logger.error('Server-side initialization failed:', error);
             });
+        } else {
+            // Restore state from localStorage if available
+            const savedState = localStorage.getItem('followup-state');
+            if (savedState) {
+                const parsed = JSON.parse(savedState);
+                this.previousQuestions = new Set(parsed.previousQuestions);
+                this.state = parsed.state;
+            }
         }
     }
 
@@ -63,26 +92,6 @@ class SmartFollowUpSystem {
         }
     }
 
-    public analyzeResponses(responses: Record<string, string> | any): AnalysisResult {
-        const normalizedResponses = this.normalizeResponses(responses);
-        const allResponses = Object.values(normalizedResponses).join(' ');
-        const contentAnalysis = this.analyzeResponseContent(allResponses);
-
-        const hasBirthTimeframe = !!contentAnalysis.timeframe;
-        const hasGeography = contentAnalysis.locations.length > 0;
-
-        return {
-            needsFollowUp: !hasBirthTimeframe || !hasGeography,
-            hasBirthTimeframe,
-            hasGeography,
-            extractedInfo: contentAnalysis,
-            missingInfo: {
-                birthTimeframe: !hasBirthTimeframe,
-                geography: !hasGeography
-            }
-        };
-    }
-
     private normalizeResponses(responses: any): Record<string, string> {
         if (!responses) return {};
         if (responses.responses) {
@@ -99,84 +108,123 @@ class SmartFollowUpSystem {
         return normalized;
     }
 
-    private analyzeResponseContent(response: string): {
-        timeframe?: string;
-        locations?: string[];
-        events?: string[];
-        sentiments?: Record<string, string[]>;
-    } {
-        return {
-            timeframe: this.extractTimeframe(response),
-            locations: this.extractLocations(response),
-            events: this.extractEvents(response),
-            sentiments: this.extractSentiments(response)
+    private extractTimeframe(text: string): { year?: number; decade?: number } {
+        const patterns = {
+            fullYear: /\b(19|20)\d{2}\b/,                    // 1985
+            shortYear: /\b[\'']?(\d{2})\b/,                  // '85 or 85
+            decadeSpecific: /\b(19|20)\d{0}s\b/,            // 1980s or 80s
+            decadeColloquial: /\b(early|mid|late)\s+(19|20)\d{0}s\b/, // early 80s
+            birthYear: /born\s+in\s+(?:the\s+)?(?:year\s+)?(\d{2,4})/i,
+            birthDecade: /born\s+in\s+(?:the\s+)?(19|20)\d{0}s/i
         };
-    }
 
-    private extractTimeframe(text: string): string | undefined {
-        const timePatterns = [
-            /\b(19|20)\d{2}\b/,
-            /\b(19|20)\d{0}s\b/,
-            /born\s+in\s+(?:the\s+)?(19|20)\d{2}/i,
-            /grew\s+up\s+in\s+the\s+(19|20)\d{0}s/i
-        ];
-
-        for (const pattern of timePatterns) {
-            const match = text.match(pattern);
-            if (match) return match[0];
+        // Try to extract exact year first
+        const fullYearMatch = text.match(patterns.fullYear);
+        if (fullYearMatch) {
+            return { year: parseInt(fullYearMatch[0]) };
         }
-        return undefined;
+
+        // Try short year format
+        const shortYearMatch = text.match(patterns.shortYear);
+        if (shortYearMatch) {
+            const year = parseInt(shortYearMatch[1]);
+            // Determine century (19xx or 20xx)
+            const century = year > 50 ? 1900 : 2000;
+            return { year: century + year };
+        }
+
+        // Try decade formats
+        const decadeMatch = text.match(patterns.decadeSpecific) || 
+                           text.match(patterns.decadeColloquial);
+        if (decadeMatch) {
+            const decade = parseInt(decadeMatch[0].match(/\d{2,3}/)[0]) * 10;
+            return { decade };
+        }
+
+        return {};
     }
 
     private extractLocations(text: string): string[] {
         const locations: string[] = [];
         const locationPatterns = [
             /(?:in|at|from|grew up in)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
-            /(?:city|town|country|state) of\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g
+            /(?:city|town|country|state) of\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
+            /born\s+in\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
+            /lived\s+in\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
+            /moved\s+to\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g
         ];
 
         locationPatterns.forEach(pattern => {
             const matches = text.matchAll(pattern);
             for (const match of matches) {
-                if (match[1]) locations.push(match[1]);
+                if (match[1]) locations.push(match[1].trim());
             }
         });
 
         return [...new Set(locations)];
     }
-    private extractEvents(text: string): string[] {
-        // This could be expanded based on your needs
-        return [];
-    }
 
-    private extractSentiments(text: string): Record<string, string[]> {
-        const sentiments: Record<string, string[]> = {
-            community: [],
-            events: []
-        };
-
-        const communityPatterns = [
-            /(?:identify|connected|belong)\s+(?:with|to)\s+([^,.]+)/gi,
-            /(?:part of|member of)\s+([^,.]+)/gi
+    private extractInterests(text: string): string[] {
+        const interests: string[] = [];
+        const interestPatterns = [
+            /(?:interested in|fascinated by|passionate about)\s+([^,.]+)/gi,
+            /(?:love|enjoy|like)\s+(?:to\s+)?([^,.]+)/gi,
+            /(?:my|our)\s+(?:hobby|interest|passion)\s+(?:is|was)\s+([^,.]+)/gi
         ];
 
-        communityPatterns.forEach(pattern => {
+        interestPatterns.forEach(pattern => {
             const matches = text.matchAll(pattern);
             for (const match of matches) {
-                if (match[1]) sentiments.community.push(match[1].trim());
+                if (match[1]) interests.push(match[1].trim());
             }
         });
 
-        return sentiments;
+        return [...new Set(interests)];
+    }
+
+    private extractCulturalMarkers(text: string): string[] {
+        const markers: string[] = [];
+        const patterns = [
+            /(?:identify|connected|belong)\s+(?:with|to)\s+([^,.]+)/gi,
+            /(?:part of|member of)\s+([^,.]+)/gi,
+            /(?:my|our)\s+(?:culture|community|people)\s+([^,.]+)/gi
+        ];
+
+        patterns.forEach(pattern => {
+            const matches = text.matchAll(pattern);
+            for (const match of matches) {
+                if (match[1]) markers.push(match[1].trim());
+            }
+        });
+
+        return [...new Set(markers)];
+    }
+
+    private determinePrimaryRegion(locations: string[]): string | undefined {
+        return locations[0]; // This should be enhanced with region mapping logic
     }
 
     private debugLog(type: string, data: any) {
         const logEntry = {
             timestamp: new Date().toISOString(),
             type,
-            data
+            data,
+            state: this.state,
+            analysis: {
+                patterns: {
+                    timeframe: {
+                        fullYear: /\b(19|20)\d{2}\b/.test(data?.text || ''),
+                        decade: /\b(19|20)\d{0}s\b/.test(data?.text || '')
+                    },
+                    location: {
+                        direct: /\b(?:city|country|town|state)\b/i.test(data?.text || ''),
+                        context: /\b(?:born|grew up|raised)\s+in\b/i.test(data?.text || '')
+                    }
+                }
+            }
         };
         console.log('SmartFollowUpSystem Debug:', logEntry);
+        
         if (typeof window !== 'undefined') {
             const logs = JSON.parse(localStorage.getItem('followup-debug-logs') || '[]');
             logs.push(logEntry);
@@ -184,154 +232,145 @@ class SmartFollowUpSystem {
         }
     }
 
-    private constructPrompt(analysis: AnalysisResult, attemptNumber: number, responses: Record<string, string> | null | undefined): string {
-        const responseValues = responses ? Object.values(responses) : [];
-        const existingInfo = this.analyzeResponseContent(responseValues.join(' '));
-        
-        const approachByAttempt = [
-            {
-                focus: "broad historical context",
-                examples: [
-                    "What's your earliest memory of a major world event that affected your community?",
-                    "Which cultural or social movements were most talked about during your childhood?"
-                ]
+    private getPatternMatches(text: string) {
+        return {
+            timeframe: {
+                fullYear: /\b(19|20)\d{2}\b/.test(text),
+                shortYear: /\b[\'']?\d{2}\b/.test(text),
+                decade: /\b(19|20)\d{0}s\b/.test(text),
+                decadeColloquial: /\b(early|mid|late)\s+(19|20)\d{0}s\b/.test(text)
             },
-            {
-                focus: "personal experience",
-                examples: [
-                    "How did significant changes in technology or society affect your early life?",
-                    "What traditions or celebrations shaped your childhood experiences?"
-                ]
-            },
-            {
-                focus: "community impact",
-                examples: [
-                    "How did your community respond to major changes happening in the world?",
-                    "What social or economic shifts had the biggest impact on your early environment?"
-                ]
-            },
-            {
-                focus: "specific events",
-                examples: [
-                    "Which historical moments from your youth left the strongest impression?",
-                    "How did local customs and global events interact in your early years?"
-                ]
+            location: {
+                direct: /\b(?:city|country|town|state)\b/i.test(text),
+                context: /\b(?:born|grew up|raised)\s+in\b/i.test(text),
+                cultural: /\b(?:community|neighborhood|region)\b/i.test(text)
             }
-        ];
+        };
+    }
 
-        const currentApproach = approachByAttempt[attemptNumber % approachByAttempt.length];
+    public analyzeResponses(responses: Record<string, string>): AnalysisResult {
+        const allText = Object.values(responses).join(' ');
+        const timeframe = this.extractTimeframe(allText);
+        const locations = this.extractLocations(allText);
+        const interests = this.extractInterests(allText);
+
+        return {
+            needsFollowUp: !timeframe.year && !timeframe.decade || locations.length === 0,
+            hasBirthTimeframe: !!timeframe.year || !!timeframe.decade,
+            hasGeography: locations.length > 0,
+            extractedInfo: {
+                birthYear: timeframe.year,
+                birthDecade: timeframe.decade,
+                locations,
+                primaryRegion: this.determinePrimaryRegion(locations),
+                interests,
+                culturalMarkers: this.extractCulturalMarkers(allText)
+            },
+            missingInfo: {
+                birthTimeframe: !timeframe.year && !timeframe.decade,
+                geography: locations.length === 0
+            }
+        };
+    }
+
+    // Modify the question generation methods:
+    private async generateEnrichmentQuestion(analysis: AnalysisResult, attemptNumber: number): Promise<FollowUpResponse> {
+        const context = `We know they were ${analysis.extractedInfo.birthYear ? 
+            `born in ${analysis.extractedInfo.birthYear}` : 
+            `born in the ${analysis.extractedInfo.birthDecade}s`} 
+        in ${analysis.extractedInfo.primaryRegion}.
+        Known interests: ${analysis.extractedInfo.interests?.join(', ') || 'none yet'}
+        Cultural markers: ${analysis.extractedInfo.culturalMarkers?.join(', ') || 'none yet'}`;
+
+        const prompt = `${context}
         
-        const basePrompt = `You are helping build connections between people through shared experiences and perspectives. Your immediate goal is to gather essential timeline and location context, but do this through questions about experiences and reactions to events.
+        Previous questions: ${Array.from(this.previousQuestions).join(', ')}
+        
+        Generate a single, conversational question about their experience with historical events, 
+        cultural changes, or social movements from their formative years.
+        
+        Return only the question, with no additional commentary or context.`;
 
-        Current context:
-        - Attempt: ${attemptNumber + 1}/4 (Focus: ${currentApproach.focus})
-        - Previous responses: ${JSON.stringify(responseValues)}
-        - Already know: ${JSON.stringify(existingInfo)}
-        - Still need: ${analysis.missingInfo.birthTimeframe ? 'timeline context' : ''} ${analysis.missingInfo.geography ? 'location context' : ''}
+        const message = await this.anthropic.messages.create({
+            model: DEFAULT_MODEL,
+            max_tokens: MAX_TOKENS,
+            messages: [{ role: "user", content: prompt }]
+        });
 
-        Question Guidelines:
-        1. Focus on ${currentApproach.focus} for this attempt
-        2. Frame questions around major events, cultural shifts, or social movements
-        3. If timeline context is needed, ask about their experience with specific historical events
-        4. If location context is needed, ask about cultural experiences rather than direct geography
-        5. Never repeat previous questions or use similar phrasings
-        6. Never ask directly "where did you grow up" or similar variations
+        return {
+            question: message.content[0].text.trim(),
+            isEnrichment: true,
+            debugInfo: {
+                prompt,
+                analysis,
+                state: this.state,
+                patterns: this.getPatternMatches(message.content[0].text),
+                previousQuestions: Array.from(this.previousQuestions),
+                context
+            }
+        };
+    }
 
-        Current approach examples:
-        ${currentApproach.examples.join('\n        ')}
-
-        Previous questions asked: ${this.previousQuestions.join('\n        ')}
-
-        Generate a single, natural-sounding question that:
-        1. Is distinctly different from previous questions
-        2. Follows the current attempt's focus (${currentApproach.focus})
-        3. Naturally leads to information about ${analysis.missingInfo.birthTimeframe ? 'timeline' : ''}${analysis.missingInfo.birthTimeframe && analysis.missingInfo.geography ? ' and ' : ''}${analysis.missingInfo.geography ? 'location' : ''}
-        4. Builds toward constellation/cohort connections
-
-        Return only the question text.`;
-
-        return basePrompt;
+    private async generateRequiredInfoQuestion(analysis: AnalysisResult, attemptNumber: number) {
+        const prompt = `Generate a single, natural conversational question to help establish ${
+            analysis.missingInfo.birthTimeframe ? 'when' : ''
+        }${analysis.missingInfo.birthTimeframe && analysis.missingInfo.geography ? ' and ' : ''}${
+            analysis.missingInfo.geography ? 'where' : ''
+        } this person grew up.
+        
+        IMPORTANT: Return ONLY the question itself, with no explanation or context.
+        Previous questions: ${Array.from(this.previousQuestions).join(', ')}`;
+    
+        const message = await this.anthropic.messages.create({
+            model: DEFAULT_MODEL,
+            max_tokens: MAX_TOKENS,
+            messages: [{ role: "user", content: prompt }]
+        });
+    
+        return {
+            question: message.content[0].text.trim(),
+            targetInfo: analysis.missingInfo,
+            isEnrichment: false
+        };
     }
 
     async generateFollowUp(analysis: AnalysisResult, config?: FollowUpConfig) {
         const attemptNumber = config?.attemptNumber || 0;
-        let { previousResponses } = config || {};
+        this.state.currentAttempt = attemptNumber;
+        this.state.lastAnalysis = analysis;
+        
+        const hasRequiredInfo = !analysis.missingInfo.birthTimeframe && 
+                               !analysis.missingInfo.geography;
 
-        this.debugLog('attempt-start', {
-            attemptNumber,
-            previousResponses,
-            analysis
-        });
+        // Update state
+        this.state.enrichmentPhase = hasRequiredInfo;
+        
+        // Store state in localStorage
+        if (typeof window !== 'undefined') {
+            localStorage.setItem('followup-state', JSON.stringify({
+                previousQuestions: Array.from(this.previousQuestions),
+                state: this.state
+            }));
+        }
 
         try {
-            if (attemptNumber >= 2 && (analysis.missingInfo.birthTimeframe || analysis.missingInfo.geography)) {
-                const fallbackQuestion = this.generateFallbackQuestion(analysis, attemptNumber);
-                this.previousQuestions.push(fallbackQuestion);
-                return {
-                    question: fallbackQuestion,
-                    targetInfo: analysis.missingInfo
-                };
-            }
+            const result = hasRequiredInfo ? 
+                await this.generateEnrichmentQuestion(analysis, attemptNumber) :
+                await this.generateRequiredInfoQuestion(analysis, attemptNumber);
 
-            const prompt = this.constructPrompt(analysis, attemptNumber, previousResponses);
-            this.debugLog('prompt-generated', { prompt });
+            this.previousQuestions.add(result.question);
 
-            if (!this.anthropic) {
-                const variedQuestion = this.generateVariedQuestion(analysis, attemptNumber);
-                this.previousQuestions.push(variedQuestion);
-                return {
-                    question: variedQuestion,
-                    targetInfo: analysis.missingInfo
-                };
-            }
-
-            try {
-                const message = await this.anthropic.messages.create({
-                    model: DEFAULT_MODEL,
-                    max_tokens: MAX_TOKENS,
-                    messages: [{ role: "user", content: prompt }]
-                });
-
-                this.debugLog('llm-response', { message });
-
-                if (!message?.content?.[0]?.text) {
-                    throw new Error('Invalid LLM response structure');
-                }
-
-                const question = message.content[0].text.trim();
-                if (this.isQuestionTooSimilar(question, this.previousQuestions)) {
-                    const variedQuestion = this.generateVariedQuestion(analysis, attemptNumber);
-                    this.previousQuestions.push(variedQuestion);
-                    return {
-                        question: variedQuestion,
-                        targetInfo: analysis.missingInfo
-                    };
-                }
-
-                this.previousQuestions.push(question);
-                return {
-                    question,
-                    targetInfo: analysis.missingInfo
-                };
-
-            } catch (llmError) {
-                this.debugLog('llm-error', { error: llmError });
-                const variedQuestion = this.generateVariedQuestion(analysis, attemptNumber);
-                this.previousQuestions.push(variedQuestion);
-                return {
-                    question: variedQuestion,
-                    targetInfo: analysis.missingInfo
-                };
-            }
-
-        } catch (error) {
-            this.debugLog('general-error', { error });
-            const variedQuestion = this.generateVariedQuestion(analysis, attemptNumber);
-            this.previousQuestions.push(variedQuestion);
             return {
-                question: variedQuestion,
-                targetInfo: analysis.missingInfo
+                ...result,
+                debugInfo: {
+                    previousQuestions: Array.from(this.previousQuestions),
+                    state: this.state,
+                    patterns: this.getPatternMatches(result.question)
+                }
             };
+        } catch (error) {
+            this.debugLog('error', { error, state: this.state });
+            throw error;
         }
     }
 
@@ -350,81 +389,7 @@ class SmartFollowUpSystem {
         const union = new Set([...words1, ...words2]);
         return intersection.size / union.size;
     }
-
-    private generateVariedQuestion(analysis: AnalysisResult, attemptNumber: number): string {
-        const variedQuestions = {
-            timeframeQuestions: [
-                "What technological innovations caused the biggest changes during your childhood?",
-                "Which global events from your youth had the most impact on your community?",
-                "How did entertainment and media evolve during your early years?",
-                "What social changes do you remember most vividly from your childhood?"
-            ],
-            culturalQuestions: [
-                "What traditions or celebrations were most meaningful in your early years?",
-                "How did your childhood community handle major cultural shifts?",
-                "What values or beliefs shaped your early environment?",
-                "Which cultural influences had the strongest impact on your youth?"
-            ],
-            combinedQuestions: [
-                "How did historical events affect your childhood community?",
-                "What social movements or changes defined your early experiences?",
-                "How did your community adapt to global changes during your youth?",
-                "Which cultural shifts had the biggest impact on your early environment?"
-            ]
-        };
-
-        const questionSet = analysis.missingInfo.birthTimeframe && analysis.missingInfo.geography
-            ? variedQuestions.combinedQuestions
-            : analysis.missingInfo.birthTimeframe
-                ? variedQuestions.timeframeQuestions
-                : variedQuestions.culturalQuestions;
-
-        const unusedQuestions = questionSet.filter(q =>
-            !this.previousQuestions.some(prev => this.isQuestionTooSimilar(q, prev))
-        );
-
-        if (unusedQuestions.length > 0) {
-            return unusedQuestions[attemptNumber % unusedQuestions.length];
-        }
-
-        return this.generateFallbackQuestion(analysis, attemptNumber);
-    }
-
-    private generateFallbackQuestion(analysis: AnalysisResult, attemptNumber: number): string {
-        const fallbackQuestions = {
-            birthTimeframe: [
-                "What major world events do you remember from your childhood?",
-                "Which technological changes had the biggest impact on your early years?",
-                "What social or cultural movements were significant during your youth?",
-                "How did global events shape your early perspective of the world?"
-            ],
-            geography: [
-                "How would you describe the community that shaped your early perspectives?",
-                "What cultural traditions or celebrations were important in your childhood?",
-                "How did your early environment influence your worldview?",
-                "What aspects of your childhood community had the biggest impact on you?"
-            ],
-            combined: [
-                "What events or experiences defined your childhood community?",
-                "How did your early environment respond to major world events?",
-                "Which cultural or social movements shaped your community growing up?",
-                "How did local and global changes affect your early perspectives?"
-            ]
-        };
-
-        const safeAttemptNumber = Math.min(attemptNumber, fallbackQuestions.birthTimeframe.length - 1);
-
-        if (analysis.missingInfo.birthTimeframe && analysis.missingInfo.geography) {
-            return fallbackQuestions.combined[safeAttemptNumber];
-        } else if (analysis.missingInfo.birthTimeframe) {
-            return fallbackQuestions.birthTimeframe[safeAttemptNumber];
-        } else if (analysis.missingInfo.geography) {
-            return fallbackQuestions.geography[safeAttemptNumber];
-        } else {
-            return "How did your early experiences shape your perspective on the world?";
-        }
-    }
 }
 
-// Export a singleton instance
+// Export singleton instance
 export const followUpSystem = new SmartFollowUpSystem();

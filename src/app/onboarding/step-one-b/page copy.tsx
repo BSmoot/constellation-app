@@ -13,12 +13,12 @@ const DebugPanel = dynamic(() => import('@/components/DebugPanel'), {
 });
 
 interface StepOneBData {
-    previousResponses: Record<string, string>;
-    currentAttempt: number;
-    requiredInfo: {
-        birthTimeframe: boolean;
-        geography: boolean;
-    };
+  previousResponses: Record<string, string>;
+  currentAttempt: number;
+  requiredInfo: {
+    birthTimeframe: boolean;
+    geography: boolean;
+  };
 }
 
 interface ApiResponse {
@@ -47,53 +47,62 @@ export default function StepOneBPage() {
     const [input, setInput] = useState('');
     const [feedback, setFeedback] = useState('');
     const [followUpQuestion, setFollowUpQuestion] = useState('');
-    const [isProcessing, setIsProcessing] = useState(false);
+    const [isProcessing, setIsProcessing] = useState(true);
     const [stepData, setStepData] = useState<StepOneBData>(initialStepData);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     useEffect(() => {
-        setMounted(true);
-        const stepOneData = localStorage.getItem('onboarding-step-one');
-        if (stepOneData) {
-            const parsed = JSON.parse(stepOneData);
-            setStepData(prev => ({
-                ...prev,
-                previousResponses: parsed.raw || {}
-            }));
-            generateInitialQuestion(parsed.raw || {});
-        } else {
-            generateInitialQuestion({});
-        }
-    }, []);
+      setMounted(true);
+      const stepOneData = localStorage.getItem('onboarding-step-one');
+      if (stepOneData) {
+          try {
+              const parsed = JSON.parse(stepOneData);
+              setStepData(prev => ({
+                  ...prev,
+                  previousResponses: parsed.raw || {},
+              }));
+              generateInitialQuestion(parsed.raw || {});
+          } catch (error) {
+              console.error('Error parsing stored data:', error);
+              generateInitialQuestion({});
+          }
+      } else {
+          generateInitialQuestion({});
+      }
+  }, []);
 
     const generateInitialQuestion = async (responses: Record<string, string>) => {
       setIsProcessing(true);
       try {
+          console.log('Generating initial question with responses:', responses);
+  
           const response = await fetch('/api/follow-up', {
               method: 'POST',
               headers: {
                   'Content-Type': 'application/json',
               },
               body: JSON.stringify({
-                  responses,
+                  responses: responses || {},
                   attempts: 0
               }),
           });
   
-          const data: ApiResponse = await response.json();
+          const data = await response.json();
           
           if (!response.ok) {
               throw new Error(data.error || `HTTP error! status: ${response.status}`);
           }
   
-          if (data.success && data.question) {
-              setFollowUpQuestion(data.question);
+          console.log('Initial question response:', data);
+  
+          if (data.success) {
+              setFollowUpQuestion(data.question || 'Tell us more about when and where you grew up.');
               setStepData(prev => ({
                   ...prev,
-                  requiredInfo: data.requiredInfo || prev.requiredInfo
+                  requiredInfo: data.requiredInfo || prev.requiredInfo,
               }));
           } else {
-              setFollowUpQuestion('Tell us more about when and where you grew up.');
+              throw new Error(data.error || 'Failed to generate question');
           }
       } catch (error) {
           console.error('Error generating initial question:', error);
@@ -119,6 +128,13 @@ export default function StepOneBPage() {
       setFeedback('');
   
       try {
+          // Log the request data for debugging
+          console.log('Submitting data:', {
+              input,
+              previousResponses: stepData.previousResponses,
+              attempts: stepData.currentAttempt
+          });
+  
           const response = await fetch('/api/follow-up', {
               method: 'POST',
               headers: {
@@ -126,12 +142,15 @@ export default function StepOneBPage() {
               },
               body: JSON.stringify({
                   input,
-                  previousResponses: stepData.previousResponses,
-                  attempts: stepData.currentAttempt,
+                  responses: {
+                      ...stepData.previousResponses,
+                      [`response${stepData.currentAttempt}`]: input
+                  },
+                  attempts: stepData.currentAttempt
               }),
           });
   
-          const data: ApiResponse = await response.json();
+          const data = await response.json();
   
           if (!response.ok) {
               throw new Error(data.error || `HTTP error! status: ${response.status}`);
@@ -141,6 +160,9 @@ export default function StepOneBPage() {
               ...stepData.previousResponses,
               [`response${stepData.currentAttempt}`]: input,
           };
+  
+          // Log the response data for debugging
+          console.log('Response data:', data);
   
           if (data.proceedWithUnknown || stepData.currentAttempt >= 3) {
               localStorage.setItem('onboarding-complete', JSON.stringify({
@@ -154,9 +176,15 @@ export default function StepOneBPage() {
                   ...prev,
                   currentAttempt: prev.currentAttempt + 1,
                   requiredInfo: data.requiredInfo || prev.requiredInfo,
-                  previousResponses: updatedResponses
+                  previousResponses: updatedResponses,
               }));
-              setFollowUpQuestion(data.question || 'Tell us more about your background.');
+              
+              if (data.question) {
+                  setFollowUpQuestion(data.question);
+              } else {
+                  console.error('No question received from API');
+                  setFeedback('There was an issue generating the next question. Please try again.');
+              }
           }
       } catch (error) {
           console.error('Error processing response:', error);
@@ -195,60 +223,81 @@ export default function StepOneBPage() {
                                 Help us understand your story better
                             </p>
                         </div>
-                    </header>
+                    </header>return (
+    <main className="min-h-screen bg-[#E9F1F7] flex items-center justify-center">
+      <div className="max-w-4xl w-full px-4 sm:px-6 lg:px-8">
+        <header className="mb-8 space-y-2">
+          <div className="h-[48px] flex items-center justify-center">
+            <h1 className="text-4xl md:text-5xl font-bold text-dark font-jakarta">
+              Let's Get More Specific
+            </h1>
+          </div>
+          <div className="h-[32px] flex items-center justify-center">
+            <p className="text-lg md:text-xl text-text-light font-jakarta">
+              Help us understand your story better
+            </p>
+          </div>
+        </header>
 
-                    <div className="max-w-md mx-auto">
-                        <div className="space-y-4">
-                            <AnimatePresence mode="wait">
-                                <motion.div
-                                    key={followUpQuestion}
-                                    initial={{ opacity: 0, y: 20 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    exit={{ opacity: 0, y: -20 }}
-                                    transition={{ duration: 0.3 }}
-                                    className="bg-white/90 backdrop-blur-sm rounded-lg p-6 shadow-sm"
-                                >
-                                    {followUpQuestion && (
-                                        <p className="text-lg text-dark mb-4">{followUpQuestion}</p>
-                                    )}
-                                    <textarea
-                                        ref={textareaRef}
-                                        value={input}
-                                        onChange={(e) => setInput(e.target.value)}
-                                        onKeyDown={handleKeyDown}
-                                        placeholder="Type your response here..."
-                                        className="w-full px-4 py-3 border border-[#232C33]
-                                            border-opacity-50 rounded-lg focus:outline-none
-                                            focus:border-[#232C33] transition-colors duration-200
-                                            text-text-light resize-none h-32"
-                                    />
-                                                                        <div className="flex justify-between items-center mt-4">
-                                        <span className="text-sm text-text-light">
-                                            {4 - stepData.currentAttempt} questions remaining
-                                        </span>
-                                        <button
-                                            onClick={handleSubmit}
-                                            disabled={isProcessing || !input.trim()}
-                                            className="px-6 py-3 bg-[#F3522F] text-white rounded-lg
-                                                hover:bg-[#f4633f] transition-colors duration-200
-                                                disabled:opacity-50 disabled:cursor-not-allowed"
-                                        >
-                                            {isProcessing ? 'Processing...' : 'Continue'}
-                                        </button>
-                                    </div>
-                                </motion.div>
-                            </AnimatePresence>
-
-                            {feedback && (
-                                <div className="mt-3 text-center">
-                                    <p className="text-lg text-text-light">{feedback}</p>
-                                </div>
-                            )}
-                        </div>
-                    </div>
+        <div className="max-w-md mx-auto">
+          <AnimatePresence mode="wait">
+            {isProcessing ? (
+              <motion.div
+                key="loading"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="flex justify-center items-center py-12"
+              >
+                <div className="spinner"></div>
+              </motion.div>
+            ) : (
+              <motion.div
+                key="question"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ duration: 0.3 }}
+                className="bg-white/90 backdrop-blur-sm rounded-lg p-6 shadow-sm"
+              >
+                {followUpQuestion && (
+                  <p className="text-lg text-dark mb-4">{followUpQuestion}</p>
+                )}
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Type your response here..."
+                  className="w-full px-4 py-3 border border-[#232C33] border-opacity-50 
+                           rounded-lg focus:outline-none focus:border-[#232C33] 
+                           transition-colors duration-200 text-text-light resize-none h-32"
+                />
+                <div className="flex justify-between items-center mt-4">
+                  <span className="text-sm text-text-light">
+                    {4 - stepData.currentAttempt} questions remaining
+                  </span>
+                  <button
+                    onClick={handleSubmit}
+                    disabled={isProcessing || !input.trim()}
+                    className="px-6 py-3 bg-[#F3522F] text-white rounded-lg
+                             hover:bg-[#f4633f] transition-colors duration-200
+                             disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isProcessing ? 'Processing...' : 'Continue'}
+                  </button>
                 </div>
-            </main>
-            {process.env.NODE_ENV === 'development' && <DebugPanel />}
-        </>
-    );
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {feedback && (
+            <div className="mt-3 text-center">
+              <p className="text-lg text-text-light">{feedback}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
+);
 }
