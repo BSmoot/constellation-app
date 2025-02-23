@@ -15,7 +15,7 @@ export default {
         background: '#F7E1D7',
         text: {
           DEFAULT: '#232C33',
-          light: '#4A5561',
+          light: '#7992A4',
         },
         metal: '#2C3E50',
         steel: '#95A5A6',
